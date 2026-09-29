@@ -14,6 +14,8 @@ import dev.geo.admin.system.model.system.entity.SysRole;
 import dev.geo.admin.system.model.system.vo.TreeSelect;
 import dev.geo.admin.system.service.system.ISysDeptService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +30,9 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class SysDeptServiceImpl implements ISysDeptService {
+    @Autowired
+    @Lazy
+    private ISysDeptService scopedDeptService;
 
     private final SysDeptMapper deptMapper;
 
@@ -54,7 +59,7 @@ public class SysDeptServiceImpl implements ISysDeptService {
      */
     @Override
     public List<TreeSelect> selectDeptTreeList(SysDept dept) {
-        List<SysDept> deptList = this.selectDeptList(dept);
+        List<SysDept> deptList = scopedDeptService.selectDeptList(dept);
         return buildDeptTreeSelect(deptList);
     }
 
@@ -177,7 +182,7 @@ public class SysDeptServiceImpl implements ISysDeptService {
         if (!SecurityUtils.isAdmin() && ObjectUtil.isNotNull(deptId)) {
             SysDept dept = new SysDept();
             dept.setId(deptId);
-            List<SysDept> deptList = this.selectDeptList(dept);
+            List<SysDept> deptList = scopedDeptService.selectDeptList(dept);
             if (ObjectUtil.isEmpty(deptList)) {
                 throw new ServiceException("没有权限访问部门数据！");
             }

@@ -14,6 +14,8 @@ interface RequestAuthOptions {
    * 获取当前 Token。
    */
   getToken?: () => null | string | undefined;
+  /** 当前登录会话的版本，用于丢弃旧会话的响应。 */
+  getSessionRevision?: () => number;
   /**
    * 刷新 AccessToken，返回新的 Token。
    */

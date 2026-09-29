@@ -20,6 +20,7 @@ import dev.geo.admin.system.model.system.entity.SysRoleMenu;
 import dev.geo.admin.system.model.system.entity.SysUserRole;
 import dev.geo.admin.system.service.system.ISysRoleService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,6 +31,9 @@ import java.util.*;
  */
 @Service
 public class SysRoleServiceImpl implements ISysRoleService {
+    @Autowired
+    @Lazy
+    private ISysRoleService scopedRoleService;
     @Override
     @DataScope(deptAlias = "d")
     public PageResult<SysRole> selectRolePage(RolePageReqDTO query) {
@@ -108,7 +112,7 @@ public class SysRoleServiceImpl implements ISysRoleService {
      */
     @Override
     public List<SysRole> selectRoleAll() {
-        return this.selectRoleList(new SysRole());
+        return scopedRoleService.selectRoleList(new SysRole());
     }
 
     /**
@@ -188,7 +192,7 @@ public class SysRoleServiceImpl implements ISysRoleService {
             for (Long roleId : roleIds) {
                 SysRole role = new SysRole();
                 role.setId(roleId);
-                List<SysRole> roles = this.selectRoleList(role);
+                List<SysRole> roles = scopedRoleService.selectRoleList(role);
                 if (ObjectUtil.isEmpty(roles)) {
                     throw new ServiceException("没有权限访问角色数据！");
                 }

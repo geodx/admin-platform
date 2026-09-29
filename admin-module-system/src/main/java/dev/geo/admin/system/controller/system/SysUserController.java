@@ -1,7 +1,6 @@
 package dev.geo.admin.system.controller.system;
 
 import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.util.StrUtil;
 import dev.geo.admin.common.annotation.Log;
 import dev.geo.admin.common.core.controller.BaseController;
 import dev.geo.admin.common.core.model.ApiResult;
@@ -26,7 +25,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -47,7 +45,6 @@ public class SysUserController extends BaseController {
     private final ISysRoleService roleService;
     private final ISysDeptService deptService;
     private final ISysPostService postService;
-    private final PasswordEncoder passwordEncoder;
     private final ExcelService excelService;
 
     @PreAuthorize("@se.hasPermission('system:user:list')")
@@ -116,15 +113,6 @@ public class SysUserController extends BaseController {
     @Operation(summary = "新增用户")
     public ApiResult<Void> add(@Validated @RequestBody UserSaveDTO request) {
         SysUser user = BeanUtil.toBean(request, SysUser.class);
-        if (StrUtil.isBlank(user.getPassword())) {
-            return error("新增用户失败，初始密码不能为空");
-        }
-        checkRelatedDataScope(user);
-        ApiResult<Void> validation = validateUser(user, "新增");
-        if (validation != null) {
-            return validation;
-        }
-        user.setPassword(passwordEncoder.encode(user.getPassword()));
         return toApiResult(userService.insertUser(user));
     }
 
@@ -134,11 +122,7 @@ public class SysUserController extends BaseController {
     @Operation(summary = "修改用户")
     public ApiResult<Void> edit(@Validated @RequestBody UserSaveDTO request) {
         SysUser user = BeanUtil.toBean(request, SysUser.class);
-        userService.checkUserAllowed(user);
-        userService.checkUserDataScope(user.getId());
-        checkRelatedDataScope(user);
-        ApiResult<Void> validation = validateUser(user, "修改");
-        return validation == null ? toApiResult(userService.updateUser(user)) : validation;
+        return toApiResult(userService.updateUser(user));
     }
 
     @PreAuthorize("@se.hasPermission('system:user:remove')")
@@ -158,9 +142,6 @@ public class SysUserController extends BaseController {
     @Operation(summary = "重置用户密码")
     public ApiResult<Void> resetPassword(@Validated @RequestBody PasswordResetDTO request) {
         SysUser user = BeanUtil.toBean(request, SysUser.class);
-        userService.checkUserAllowed(user);
-        userService.checkUserDataScope(user.getId());
-        user.setPassword(passwordEncoder.encode(user.getPassword()));
         return toApiResult(userService.resetPwd(user));
     }
 
@@ -170,8 +151,6 @@ public class SysUserController extends BaseController {
     @Operation(summary = "修改用户状态")
     public ApiResult<Void> changeStatus(@Validated @RequestBody StatusUpdateDTO request) {
         SysUser user = BeanUtil.toBean(request, SysUser.class);
-        userService.checkUserAllowed(user);
-        userService.checkUserDataScope(user.getId());
         return toApiResult(userService.updateUserStatus(user));
     }
 
@@ -191,8 +170,6 @@ public class SysUserController extends BaseController {
     @PutMapping("/{id}/roles")
     @Operation(summary = "设置用户角色")
     public ApiResult<Void> updateUserRoles(@Parameter(description = "用户 ID") @PathVariable Long id, @Validated @RequestBody Long[] roleIds) {
-        userService.checkUserDataScope(id);
-        roleService.checkRoleDataScope(roleIds);
         userService.insertUserAuth(id, roleIds);
         return success();
     }
@@ -204,25 +181,4 @@ public class SysUserController extends BaseController {
         return success(deptService.selectDeptTreeList(query));
     }
 
-    private void checkRelatedDataScope(SysUser user) {
-        if (user.getDeptId() != null) {
-            deptService.checkDeptDataScope(user.getDeptId());
-        }
-        if (user.getRoleIds() != null && user.getRoleIds().length > 0) {
-            roleService.checkRoleDataScope(user.getRoleIds());
-        }
-    }
-
-    private ApiResult<Void> validateUser(SysUser user, String action) {
-        if (!userService.checkUserNameUnique(user)) {
-            return error(action + "用户失败，登录账号已存在：" + user.getUserName());
-        }
-        if (user.getPhoneNumber() != null && !user.getPhoneNumber().isBlank() && !userService.checkPhoneUnique(user)) {
-            return error(action + "用户失败，手机号码已存在");
-        }
-        if (user.getEmail() != null && !user.getEmail().isBlank() && !userService.checkEmailUnique(user)) {
-            return error(action + "用户失败，邮箱已存在");
-        }
-        return null;
-    }
 }

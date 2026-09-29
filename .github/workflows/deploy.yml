@@ -60,6 +60,10 @@ jobs:
         # 严格按 package-lock.json 安装依赖，不在 CI 中更新锁文件。
         run: npm ci
 
+      - name: Test frontend
+        working-directory: admin-ui
+        run: npm test
+
       - name: Check and build frontend
         working-directory: admin-ui
         # 同时进行类型检查和 Vite 打包；任一失败都会阻止后续发布。

@@ -75,14 +75,6 @@ public interface ISysUserService {
     String selectUserPostGroup(String userName);
 
     /**
-     * 校验用户名称是否唯一
-     *
-     * @param user 用户信息
-     * @return 结果
-     */
-    boolean checkUserNameUnique(SysUser user);
-
-    /**
      * 校验手机号码是否唯一
      *
      * @param user 用户信息
@@ -97,13 +89,6 @@ public interface ISysUserService {
      * @return 结果
      */
     boolean checkEmailUnique(SysUser user);
-
-    /**
-     * 校验用户是否允许操作
-     *
-     * @param user 用户信息
-     */
-    void checkUserAllowed(SysUser user);
 
     /**
      * 校验用户是否有数据权限
