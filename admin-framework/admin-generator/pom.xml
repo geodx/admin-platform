@@ -12,6 +12,11 @@
     <description>generator代码生成</description>
 
     <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- 通用工具-->
         <dependency>
             <groupId>dev.geo</groupId>

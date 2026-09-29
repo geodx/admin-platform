@@ -15,6 +15,7 @@ type InternalRequestConfig = InternalAxiosRequestConfig &
      * 当前请求是否已经在刷新 Token 后重试过。
      */
     authRetried?: boolean;
+    authRevision?: number;
   };
 type GetAuthOptions = () => RequestAuthOptions | undefined;
 
@@ -110,6 +111,7 @@ function addRequestInterceptor(axiosInstance: AxiosInstance, getAuthOptions: Get
         // 如果不需要登录拦截，则清除请求头中的Authorization
         config.headers.delete('Authorization');
       } else {
+        config.authRevision ??= getAuthOptions()?.getSessionRevision?.();
         const token = getAuthOptions()?.getToken?.();
 
         if (token) {
@@ -232,13 +234,6 @@ function setupRequestInterceptors(axiosInstance: AxiosInstance, getAuthOptions: 
   addResponseInterceptor(axiosInstance, getAuthOptions);
 }
 
-/**
- * 全局只允许同时存在一个 refresh 请求。
- *
- * 多个接口同时返回 401 时，其他接口等待同一个 Promise。
- */
-let refreshPromise: null | Promise<string> = null;
-
 async function refreshAndRetry(
   axiosInstance: AxiosInstance,
   config: InternalRequestConfig,
@@ -253,6 +248,13 @@ async function refreshAndRetry(
   if (!authOptions) {
     return Promise.reject('请求认证处理器尚未初始化');
   }
+  // 已退出或切换登录的旧请求不能发起刷新，也不能以新身份重试。
+  if (
+    config.authRevision !== undefined &&
+    config.authRevision !== authOptions.getSessionRevision?.()
+  ) {
+    return Promise.reject(originalError);
+  }
 
   // 已重试过仍然 401，说明新 Token 也无法通过认证。
   if (config.authRetried) {
@@ -265,25 +267,35 @@ async function refreshAndRetry(
     return Promise.reject(originalError);
   }
 
-  config.authRetried = true;
-
-  /*
-   * 多个 401 只创建一个 refresh 请求。
-   * refresh 失败时，只在这个 Promise 中统一处理登录过期。
-   */
-  if (!refreshPromise) {
-    refreshPromise = authOptions
-      .refreshToken()
-      .catch(async (error) => {
-        await authOptions.onUnauthorized?.();
-        throw error;
-      })
-      .finally(() => {
-        refreshPromise = null;
-      });
+  // 其他入口已刷新令牌时，直接用新令牌重试这次旧请求。
+  const currentToken = authOptions.getToken?.();
+  if (currentToken && config.headers.get('Authorization') !== `Bearer ${currentToken}`) {
+    config.authRetried = true;
+    return axiosInstance.request(config);
   }
 
-  const newToken = await refreshPromise;
+  config.authRetried = true;
+
+  let newToken: string;
+  try {
+    // 会话模块负责让 HTTP、在线连接和启动恢复共用刷新。
+    newToken = await authOptions.refreshToken();
+  } catch (error) {
+    if (
+      !(error instanceof DOMException && error.name === 'AbortError') &&
+      (config.authRevision === undefined ||
+        config.authRevision === authOptions.getSessionRevision?.())
+    ) {
+      await authOptions.onUnauthorized?.();
+    }
+    throw error;
+  }
+  if (
+    config.authRevision !== undefined &&
+    config.authRevision !== authOptions.getSessionRevision?.()
+  ) {
+    return Promise.reject(originalError);
+  }
 
   /*
    * 虽然请求拦截器重放时会再次注入 Token，

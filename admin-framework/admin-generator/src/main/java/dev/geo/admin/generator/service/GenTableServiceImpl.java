@@ -201,27 +201,7 @@ public class GenTableServiceImpl implements IGenTableService {
      */
     @Override
     public Map<String, String> previewCode(Long tableId) {
-        Map<String, String> dataMap = new LinkedHashMap<>();
-        // 查询表信息
-        GenTable table = genTableMapper.selectGenTableById(tableId);
-        // 设置主子表信息
-        setSubTable(table);
-        // 设置主键列信息
-        setPkColumn(table);
-        VelocityInitializer.initVelocity();
-
-        VelocityContext context = VelocityUtils.prepareContext(table);
-
-        // 获取模板列表
-        List<String> templates = VelocityUtils.getTemplateList(table);
-        for (String template : templates) {
-            // 渲染模板
-            StringWriter sw = new StringWriter();
-            Template tpl = Velocity.getTemplate(template, Constants.UTF8);
-            tpl.merge(context, sw);
-            dataMap.put(VelocityUtils.getFileName(template, table), sw.toString());
-        }
-        return dataMap;
+        return renderCode(genTableMapper.selectGenTableById(tableId));
     }
 
     /**
@@ -242,26 +222,14 @@ public class GenTableServiceImpl implements IGenTableService {
      */
     @Override
     public void generatorCode(String tableName) {
-        // 查询表信息
         GenTable table = genTableMapper.selectGenTableByName(tableName);
-        // 设置主子表信息
-        setSubTable(table);
-        // 设置主键列信息
-        setPkColumn(table);
-
-        VelocityInitializer.initVelocity();
-
-        VelocityContext context = VelocityUtils.prepareContext(table);
-
-        // 获取模板列表
-        List<String> templates = VelocityUtils.getTemplateList(table);
-        for (String template : templates) {
-            StringWriter writer = new StringWriter();
-            Velocity.getTemplate(template, Constants.UTF8).merge(context, writer);
+        Map<String, String> files = renderCode(table);
+        for (Map.Entry<String, String> file : files.entrySet()) {
             try {
-                FileUtils.writeStringToFile(new File(getGenPath(table, template)), writer.toString(), StandardCharsets.UTF_8);
+                FileUtils.writeStringToFile(new File(resolveGenPath(table, file.getKey())),
+                        file.getValue(), StandardCharsets.UTF_8);
             } catch (IOException e) {
-                throw new ServiceException("写入生成文件失败：" + template);
+                throw new ServiceException("写入生成文件失败：" + file.getKey());
             }
         }
     }
@@ -325,18 +293,11 @@ public class GenTableServiceImpl implements IGenTableService {
         if (tableNames == null || tableNames.length == 0) throw new ServiceException("请选择要生成的表");
         Map<String, String> files = new LinkedHashMap<>();
         for (String tableName : new LinkedHashSet<>(Arrays.asList(tableNames))) {
-            GenTable table = genTableMapper.selectGenTableByName(tableName);
-            setSubTable(table);
-            setPkColumn(table);
-            VelocityInitializer.initVelocity();
-            VelocityContext context = VelocityUtils.prepareContext(table);
-            for (String template : VelocityUtils.getTemplateList(table)) {
-                StringWriter writer = new StringWriter();
-                Velocity.getTemplate(template, Constants.UTF8).merge(context, writer);
-                String fileName = VelocityUtils.getFileName(template, table);
-                String previous = files.putIfAbsent(fileName, writer.toString());
-                if (previous != null && !previous.equals(writer.toString())) {
-                    throw new ServiceException("生成文件名冲突，请调整类名或分批生成：" + fileName);
+            Map<String, String> rendered = renderCode(genTableMapper.selectGenTableByName(tableName));
+            for (Map.Entry<String, String> file : rendered.entrySet()) {
+                String previous = files.putIfAbsent(file.getKey(), file.getValue());
+                if (previous != null && !previous.equals(file.getValue())) {
+                    throw new ServiceException("生成文件名冲突，请调整类名或分批生成：" + file.getKey());
                 }
             }
         }
@@ -347,6 +308,27 @@ public class GenTableServiceImpl implements IGenTableService {
             throw new ServiceException("生成ZIP失败");
         }
         return output.toByteArray();
+    }
+
+    /** 预览、ZIP 和磁盘输出共用生成准备与渲染规则。 */
+    private Map<String, String> renderCode(GenTable table) {
+        setSubTable(table);
+        setPkColumn(table);
+        VelocityInitializer.initVelocity();
+        VelocityContext context = VelocityUtils.prepareContext(table);
+        Map<String, String> files = new LinkedHashMap<>();
+        for (String template : VelocityUtils.getTemplateList(table)) {
+            StringWriter writer = new StringWriter();
+            Template source = Velocity.getTemplate(template, Constants.UTF8);
+            source.merge(context, writer);
+            String fileName = VelocityUtils.getFileName(template, table);
+            String content = writer.toString();
+            String previous = files.putIfAbsent(fileName, content);
+            if (previous != null && !previous.equals(content)) {
+                throw new ServiceException("生成文件名冲突，请调整类名或分批生成：" + fileName);
+            }
+        }
+        return files;
     }
 
     /**
@@ -452,12 +434,16 @@ public class GenTableServiceImpl implements IGenTableService {
      * @return 生成地址
      */
     public static String getGenPath(GenTable table, String template) {
+        return resolveGenPath(table, VelocityUtils.getFileName(template, table));
+    }
+
+    private static String resolveGenPath(GenTable table, String fileName) {
         String genPath = table.getGenPath();
         java.nio.file.Path root = java.nio.file.Path.of(StrUtil.isBlank(genPath) || "/".equals(genPath)
                 ? System.getProperty("user.dir") : genPath);
         if (!root.isAbsolute()) throw new ServiceException("自定义生成路径必须是绝对路径");
         root = root.normalize();
-        java.nio.file.Path target = root.resolve(VelocityUtils.getFileName(template, table)).normalize();
+        java.nio.file.Path target = root.resolve(fileName).normalize();
         if (!target.startsWith(root)) throw new ServiceException("非法生成路径");
         return target.toString();
     }

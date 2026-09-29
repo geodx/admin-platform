@@ -90,7 +90,7 @@ class PostNoticeSoftDeleteTest {
                 inject(postService, "postMapper", posts); inject(postService, "userPostMapper", userPosts);
                 var noticeService = new SysNoticeServiceImpl(); inject(noticeService, "noticeMapper", notices);
                 var readService = new SysNoticeReadServiceImpl(reads, notices);
-                var userService = new SysUserServiceImpl(null, null, posts, null, userPosts, null, null, null);
+                var userService = new SysUserServiceImpl(null, null, posts, null, userPosts, null, null, null, null, null);
                 long userId = number(connection, "SELECT id FROM sys_user WHERE del_flag=0 LIMIT 1");
                 String key = "soft_test_" + System.nanoTime();
                 var original = post(posts, key, key);

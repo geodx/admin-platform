@@ -30,6 +30,9 @@ export const useAuthStore = defineStore('auth', () => {
   const router = useRouter();
 
   const loginLoading = ref(false);
+  let sessionRevision = 0;
+  let refreshPromise: null | Promise<string> = null;
+  let restorePromise: null | Promise<boolean> = null;
   /**
    * 是否已经执行过启动会话检查。
    *
@@ -43,6 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   requestClient.configureAuth({
     getToken: () => accessStore.accessToken,
+    getSessionRevision: () => sessionRevision,
     refreshToken: refreshAccessToken,
     onUnauthorized: handleSessionExpired,
   });
@@ -66,8 +70,11 @@ export const useAuthStore = defineStore('auth', () => {
       return null;
     }
     loginLoading.value = true;
+    clearSession();
+    const revision = sessionRevision;
     try {
       const result = await loginApi(params);
+      assertCurrentSession(revision);
       if (!result.accessToken) {
         throw new Error('登录接口未返回 accessToken');
       }
@@ -77,6 +84,7 @@ export const useAuthStore = defineStore('auth', () => {
 
       // 获取用户信息并存储到 accessStore 中
       const userInfo = await fetchUserInfo();
+      assertCurrentSession(revision);
 
       // 登录已经成功，不需要路由守卫再次执行 refresh。
       sessionInitialized.value = true;
@@ -92,13 +100,16 @@ export const useAuthStore = defineStore('auth', () => {
         const target = typeof redirect === 'string' ? redirect : preferences.app.defaultHomePath;
         await router.replace(target);
       }
+      assertCurrentSession(revision);
       ElNotification({
         message: `${$t('authentication.loginSuccessDesc')}:${userInfo.nickName ?? userInfo.username}`,
         title: $t('authentication.loginSuccess'),
         type: 'success',
       });
     } catch (error) {
-      clearSession();
+      if (revision === sessionRevision) {
+        clearSession();
+      }
       throw error;
     } finally {
       loginLoading.value = false;
@@ -108,58 +119,81 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * 通过HttpCookie中的 RefreshToken  获取新的 AccessToken。
    *
-   * 并发控制放在请求拦截器中，这里只负责调用接口和保存 Token。
+   * 所有刷新入口共用同一个请求；会话切换后丢弃旧请求的结果。
    */
-  async function refreshAccessToken() {
-    const result = await refreshTokenApi();
-    if (!result.accessToken) {
-      throw new Error('刷新接口未返回 Access Token');
+  function refreshAccessToken(): Promise<string> {
+    if (refreshPromise) {
+      return refreshPromise;
     }
-    const newToken = result.accessToken;
-    accessStore.setAccessToken(newToken);
-    return newToken;
+    const revision = sessionRevision;
+    const pending = refreshTokenApi()
+      .then((result) => {
+        assertCurrentSession(revision);
+        if (!result.accessToken) {
+          throw new Error('刷新接口未返回 Access Token');
+        }
+        accessStore.setAccessToken(result.accessToken);
+        return result.accessToken;
+      })
+      .finally(() => {
+        if (refreshPromise === pending) {
+          refreshPromise = null;
+        }
+      });
+    refreshPromise = pending;
+    return pending;
   }
   /**
    * 页面刷新时恢复登录状态。
    *
    * AccessToken不持久化，页面刷新会先调用refresh，然后再请求getInfo。
    */
-  async function restoreSession() {
+  function restoreSession(): Promise<boolean> {
     if (sessionInitialized.value) {
-      return isAuthenticated.value;
+      return Promise.resolve(isAuthenticated.value);
     }
-    try {
-      if (!accessStore.accessToken) {
-        await refreshAccessToken();
-      }
-      if (!userStore.userInfo) {
-        await fetchUserInfo();
-      }
-      return true;
-    } catch {
-      /*
-       * 没有 Refresh Cookie、Cookie 已过期或 Redis 会话不存在，
-       * 都视为当前没有登录。
-       *
-       * 启动检查失败，清理本地登录状态，避免出现不一致的情况。
-       * 例如：本地有 AccessToken，但后端没有 RefreshToken，刷新页面后会出现 401。
-       * 这种情况需要清理本地 AccessToken，避免出现不一致的情况。
-       */
-      clearSession();
-      /*
-       * 这里不需要跳转到登录页，路由守卫会处理。
-       */
-      return false;
-    } finally {
-      sessionInitialized.value = true;
+    if (restorePromise) {
+      return restorePromise;
     }
+    const revision = sessionRevision;
+    const pending = (async () => {
+      try {
+        if (!accessStore.accessToken) {
+          await refreshAccessToken();
+        }
+        assertCurrentSession(revision);
+        if (!userStore.userInfo) {
+          await fetchUserInfo();
+        }
+        assertCurrentSession(revision);
+        return isAuthenticated.value;
+      } catch {
+        // Cookie 失效或会话已切换时，不让旧恢复流程清除新登录。
+        if (revision === sessionRevision) {
+          clearSession();
+        }
+        return false;
+      } finally {
+        if (revision === sessionRevision) {
+          sessionInitialized.value = true;
+        }
+      }
+    })().finally(() => {
+      if (restorePromise === pending) {
+        restorePromise = null;
+      }
+    });
+    restorePromise = pending;
+    return pending;
   }
   /**
    * 获取用户信息。
    * 更新permissions
    */
   async function fetchUserInfo() {
+    const revision = sessionRevision;
     const userInfo = await getUserInfoApi();
+    assertCurrentSession(revision);
     userStore.setUserInfo(userInfo);
     accessStore.setPermissions(userInfo.permissions ?? []);
     return userInfo;
@@ -170,6 +204,9 @@ export const useAuthStore = defineStore('auth', () => {
    * 该方法由请求拦截器在 refresh 失败后调用。
    */
   async function handleSessionExpired(message = '登录状态已过期，请重新登录'): Promise<void> {
+    if (sessionInitialized.value && !accessStore.accessToken && !userStore.userInfo) {
+      return;
+    }
     const currentRoute = router.currentRoute.value;
     const redirect = currentRoute.fullPath;
 
@@ -189,20 +226,22 @@ export const useAuthStore = defineStore('auth', () => {
    * 主动退出登录。
    */
   async function logout(redirect: boolean = true) {
-    stopOnlineSession();
     const currentRoute = router.currentRoute.value;
     const redirectPath = currentRoute.fullPath;
+    clearSession();
+    const revision = sessionRevision;
     try {
       await logoutApi();
     } catch (error) {
       console.warn('退出登录接口请求失败', error);
     } finally {
-      clearSession();
-      // 登录页带上当前路由地址
-      await router.replace({
-        path: LOGIN_PATH,
-        query: redirect && currentRoute.path !== LOGIN_PATH ? { redirect: redirectPath } : {},
-      });
+      if (revision === sessionRevision) {
+        // 登录页带上当前路由地址
+        await router.replace({
+          path: LOGIN_PATH,
+          query: redirect && currentRoute.path !== LOGIN_PATH ? { redirect: redirectPath } : {},
+        });
+      }
     }
   }
 
@@ -221,6 +260,9 @@ export const useAuthStore = defineStore('auth', () => {
    * 清理客户端认证和权限状态。
    */
   function clearSession(): void {
+    sessionRevision += 1;
+    refreshPromise = null;
+    restorePromise = null;
     stopOnlineSession();
     resetAccessRoutes();
     userStore.$reset();
@@ -230,7 +272,15 @@ export const useAuthStore = defineStore('auth', () => {
      */
     sessionInitialized.value = true;
   }
+  function assertCurrentSession(revision: number): void {
+    if (revision !== sessionRevision) {
+      throw new DOMException('会话已切换', 'AbortError');
+    }
+  }
   function $reset() {
+    sessionRevision += 1;
+    refreshPromise = null;
+    restorePromise = null;
     loginLoading.value = false;
     sessionInitialized.value = false;
   }

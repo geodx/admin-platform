@@ -21,11 +21,15 @@ import dev.geo.admin.system.model.system.dto.UserPageReqDTO;
 import dev.geo.admin.system.model.system.entity.*;
 import dev.geo.admin.system.service.system.ISysConfigService;
 import dev.geo.admin.system.service.system.ISysDeptService;
+import dev.geo.admin.system.service.system.ISysRoleService;
 import dev.geo.admin.system.service.system.ISysUserService;
 import jakarta.validation.Validator;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -59,6 +63,15 @@ public class SysUserServiceImpl implements ISysUserService {
     private final ISysDeptService deptService;
 
     protected final Validator validator;
+
+    private final ISysRoleService roleService;
+
+    private final PasswordEncoder passwordEncoder;
+
+    /** 经由代理调用带 DataScope 的查询，避免类内部调用跳过切面。 */
+    @Autowired
+    @Lazy
+    private ISysUserService scopedUserService;
 
     @Override
     @DataScope(deptAlias = "d", userAlias = "u")
@@ -178,8 +191,7 @@ public class SysUserServiceImpl implements ISysUserService {
      * @param user 用户信息
      * @return 结果
      */
-    @Override
-    public boolean checkUserNameUnique(SysUser user) {
+    private boolean checkUserNameUnique(SysUser user) {
         long userId = ObjectUtil.isNull(user.getId()) ? -1L : user.getId();
         SysUser info = userMapper.checkUserNameUnique(user.getUserName());
         if (ObjectUtil.isNotNull(info) && info.getId() != userId) {
@@ -220,13 +232,33 @@ public class SysUserServiceImpl implements ISysUserService {
         return UserConstants.UNIQUE;
     }
 
+    private void checkRelatedDataScope(SysUser user) {
+        if (user.getDeptId() != null) {
+            deptService.checkDeptDataScope(user.getDeptId());
+        }
+        if (user.getRoleIds() != null && user.getRoleIds().length > 0) {
+            roleService.checkRoleDataScope(user.getRoleIds());
+        }
+    }
+
+    private void validateUser(SysUser user, String action) {
+        if (!checkUserNameUnique(user)) {
+            throw new ServiceException(action + "用户失败，登录账号已存在：" + user.getUserName());
+        }
+        if (StrUtil.isNotBlank(user.getPhoneNumber()) && !checkPhoneUnique(user)) {
+            throw new ServiceException(action + "用户失败，手机号码已存在");
+        }
+        if (StrUtil.isNotBlank(user.getEmail()) && !checkEmailUnique(user)) {
+            throw new ServiceException(action + "用户失败，邮箱已存在");
+        }
+    }
+
     /**
      * 校验用户是否允许操作
      *
      * @param user 用户信息
      */
-    @Override
-    public void checkUserAllowed(SysUser user) {
+    private void checkUserAllowed(SysUser user) {
         if (ObjectUtil.isNotNull(user.getId()) && user.isAdmin()) {
             throw new ServiceException("不允许操作超级管理员用户");
         }
@@ -242,7 +274,7 @@ public class SysUserServiceImpl implements ISysUserService {
         if (!SecurityUtils.isAdmin()) {
             SysUser user = new SysUser();
             user.setId(userId);
-            List<SysUser> users = this.selectUserList(user);
+            List<SysUser> users = scopedUserService.selectUserList(user);
             if (ObjectUtil.isEmpty(users)) {
                 throw new ServiceException("没有权限访问用户数据！");
             }
@@ -258,6 +290,12 @@ public class SysUserServiceImpl implements ISysUserService {
     @Override
     @Transactional
     public int insertUser(SysUser user) {
+        if (StrUtil.isBlank(user.getPassword())) {
+            throw new ServiceException("新增用户失败，初始密码不能为空");
+        }
+        checkRelatedDataScope(user);
+        validateUser(user, "新增");
+        user.setPassword(passwordEncoder.encode(user.getPassword()));
         // 新增用户信息
         int rows = userMapper.insertUser(user);
         // 新增用户岗位关联
@@ -287,6 +325,12 @@ public class SysUserServiceImpl implements ISysUserService {
     @Override
     @Transactional
     public int updateUser(SysUser user) {
+        checkUserAllowed(user);
+        checkUserDataScope(user.getId());
+        checkRelatedDataScope(user);
+        validateUser(user, "修改");
+        // 管理员编辑资料不能绕过重置密码流程写入明文密码。
+        user.setPassword(null);
         Long userId = user.getId();
         // 删除用户与角色关联
         userRoleMapper.deleteUserRoleByUserId(userId);
@@ -308,6 +352,11 @@ public class SysUserServiceImpl implements ISysUserService {
     @Override
     @Transactional
     public void insertUserAuth(Long userId, Long[] roleIds) {
+        checkUserAllowed(new SysUser(userId));
+        checkUserDataScope(userId);
+        if (roleIds != null && roleIds.length > 0) {
+            roleService.checkRoleDataScope(roleIds);
+        }
         userRoleMapper.deleteUserRoleByUserId(userId);
         insertUserRole(userId, roleIds);
     }
@@ -320,6 +369,8 @@ public class SysUserServiceImpl implements ISysUserService {
      */
     @Override
     public int updateUserStatus(SysUser user) {
+        checkUserAllowed(user);
+        checkUserDataScope(user.getId());
         return userMapper.updateUserStatus(user.getId(), user.getStatus());
     }
 
@@ -365,7 +416,9 @@ public class SysUserServiceImpl implements ISysUserService {
      */
     @Override
     public int resetPwd(SysUser user) {
-        return userMapper.resetUserPwd(user.getId(), user.getPassword());
+        checkUserAllowed(user);
+        checkUserDataScope(user.getId());
+        return userMapper.resetUserPwd(user.getId(), passwordEncoder.encode(user.getPassword()));
     }
 
     /**
